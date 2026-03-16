@@ -489,5 +489,94 @@ func newItemsCmd() *cobra.Command {
 	attachments.AddCommand(attachDeleteCmd)
 	items.AddCommand(attachments)
 
+	// fields sub-group
+	fields := &cobra.Command{
+		Use:   "fields",
+		Short: "Manage item custom fields",
+	}
+
+	var fieldLabel, fieldValue string
+	fieldAddCmd := &cobra.Command{
+		Use:   "add <item-id>",
+		Short: "Add a custom field to an item",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			payload := map[string]string{
+				"label": fieldLabel,
+				"value": fieldValue,
+			}
+			data, err := c.Post("/v1/items/"+args[0]+"/fields", payload)
+			if err != nil {
+				return err
+			}
+			client.PrintJSON(data)
+			return nil
+		},
+	}
+	fieldAddCmd.Flags().StringVarP(&fieldLabel, "label", "l", "", "Field label")
+	fieldAddCmd.Flags().StringVarP(&fieldValue, "value", "v", "", "Field value")
+	fieldAddCmd.MarkFlagRequired("label")
+	fieldAddCmd.MarkFlagRequired("value")
+	fields.AddCommand(fieldAddCmd)
+
+	fieldUpdateCmd := &cobra.Command{
+		Use:   "update <item-id> <field-id>",
+		Short: "Update a custom field of an item",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			payload := make(map[string]string)
+			if cmd.Flags().Changed("label") {
+				payload["label"] = fieldLabel
+			}
+			if cmd.Flags().Changed("value") {
+				payload["value"] = fieldValue
+			}
+			data, err := c.Put("/v1/items/"+args[0]+"/fields/"+args[1], payload)
+			if err != nil {
+				return err
+			}
+			client.PrintJSON(data)
+			return nil
+		},
+	}
+	fieldUpdateCmd.Flags().StringVarP(&fieldLabel, "label", "l", "", "Field label")
+	fieldUpdateCmd.Flags().StringVarP(&fieldValue, "value", "v", "", "Field value")
+	fields.AddCommand(fieldUpdateCmd)
+
+	var fieldDeleteYes bool
+	fieldDeleteCmd := &cobra.Command{
+		Use:   "delete <item-id> <field-id>",
+		Short: "Delete a custom field from an item",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !fieldDeleteYes {
+				if !confirm("Delete field " + args[1] + "?") {
+					return nil
+				}
+			}
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			if _, err := c.Delete("/v1/items/" + args[0] + "/fields/" + args[1]); err != nil {
+				return err
+			}
+			fmt.Printf(`{"message": "Field %s deleted"}`+"\n", args[1])
+			return nil
+		},
+	}
+	fieldDeleteCmd.Flags().BoolVarP(&fieldDeleteYes, "yes", "y", false, "Skip confirmation")
+	fields.AddCommand(fieldDeleteCmd)
+
+	items.AddCommand(fields)
+
 	return items
 }
