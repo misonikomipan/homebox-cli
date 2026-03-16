@@ -25,7 +25,8 @@ func Execute() error {
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&outputFormat, "format", "f", "json", "Output format (json, table)")
 
-	rootCmd.AddCommand(newLoginCmd(),
+	rootCmd.AddCommand(newLabelmakerCmd(),
+		newLoginCmd(),
 		newLogoutCmd(),
 		newStatusCmd(),
 		newConfigCmd(),
