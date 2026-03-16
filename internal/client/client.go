@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/misonikomipan/homebox-cli/internal/config"
 )
 
@@ -101,6 +102,21 @@ func (c *Client) request(method, path string, query url.Values, body any) ([]byt
 	return data, nil
 }
 
+// Print outputs data in the specified format (json or table).
+func Print(data []byte, headers []string, rows [][]any) {
+	format := config.GetFormat()
+	switch format {
+	case "table":
+		if len(headers) > 0 && len(rows) > 0 {
+			PrintTable(headers, rows)
+		} else {
+			PrintJSON(data)
+		}
+	default:
+		PrintJSON(data)
+	}
+}
+
 // PrintJSON pretty-prints JSON bytes to stdout.
 func PrintJSON(data []byte) {
 	var v any
@@ -110,6 +126,25 @@ func PrintJSON(data []byte) {
 	}
 	out, _ := json.MarshalIndent(v, "", "  ")
 	fmt.Println(string(out))
+}
+
+// PrintTable prints a table to stdout.
+func PrintTable(headers []string, rows [][]any) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	headerRow := make(table.Row, len(headers))
+	for i, h := range headers {
+		headerRow[i] = h
+	}
+	t.AppendHeader(headerRow)
+	for _, r := range rows {
+		row := make(table.Row, len(r))
+		for i, v := range r {
+			row[i] = v
+		}
+		t.AppendRow(row)
+	}
+	t.Render()
 }
 
 // Die prints an error and exits.

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -55,7 +56,30 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client.PrintJSON(data)
+
+			if config.GetFormat() == "table" {
+				var resp struct {
+					Items []struct {
+						ID       string `json:"id"`
+						Name     string `json:"name"`
+						Quantity int    `json:"quantity"`
+						Location struct {
+							Name string `json:"name"`
+						} `json:"location"`
+					} `json:"items"`
+				}
+				if err := json.Unmarshal(data, &resp); err == nil {
+					headers := []string{"ID", "Name", "Quantity", "Location"}
+					rows := make([][]any, len(resp.Items))
+					for i, it := range resp.Items {
+						rows[i] = []any{it.ID, it.Name, it.Quantity, it.Location.Name}
+					}
+					client.Print(data, headers, rows)
+					return nil
+				}
+			}
+
+			client.Print(data, nil, nil)
 			return nil
 		},
 	}
