@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
 	"github.com/misonikomipan/homebox-cli/internal/config"
@@ -55,6 +56,8 @@ func newLoginCmd() *cobra.Command {
 			if !ok || token == "" {
 				return fmt.Errorf("no token in response")
 			}
+			// Remove "Bearer " prefix if it exists in the token string from API
+			token = strings.TrimPrefix(token, "Bearer ")
 			if err := config.SetToken(token); err != nil {
 				return err
 			}
