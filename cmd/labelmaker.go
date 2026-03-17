@@ -9,36 +9,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newTagsCmd() *cobra.Command {
-	tags := &cobra.Command{
-		Use:   "tags",
-		Short: "Manage tags/labels",
+func newLabelmakerCmd() *cobra.Command {
+	lm := &cobra.Command{
+		Use:   "labelmaker",
+		Short: "Manage labelmaker configurations",
 	}
 
-	tags.AddCommand(&cobra.Command{
+	lm.AddCommand(&cobra.Command{
 		Use:   "list",
-		Short: "List all tags",
+		Short: "List all labelmaker configurations",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := client.New(true)
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/tags", nil)
+			data, err := c.Get("/v1/labelmakers", nil)
 			if err != nil {
 				return err
 			}
 
 			if config.GetFormat() == "table" {
-				var tags []struct {
-					ID    string `json:"id"`
-					Name  string `json:"name"`
-					Color string `json:"color"`
+				var configs []struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
 				}
-				if err := json.Unmarshal(data, &tags); err == nil {
-					headers := []string{"ID", "Name", "Color"}
-					rows := make([][]any, len(tags))
-					for i, t := range tags {
-						rows[i] = []any{t.ID, t.Name, t.Color}
+				if err := json.Unmarshal(data, &configs); err == nil {
+					headers := []string{"ID", "Name"}
+					rows := make([][]any, len(configs))
+					for i, cfg := range configs {
+						rows[i] = []any{cfg.ID, cfg.Name}
 					}
 					client.Print(data, headers, rows)
 					return nil
@@ -50,16 +49,16 @@ func newTagsCmd() *cobra.Command {
 		},
 	})
 
-	tags.AddCommand(&cobra.Command{
+	lm.AddCommand(&cobra.Command{
 		Use:   "get <id>",
-		Short: "Get tag details",
+		Short: "Get labelmaker configuration details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := client.New(true)
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/tags/"+args[0], nil)
+			data, err := c.Get("/v1/labelmakers/"+args[0], nil)
 			if err != nil {
 				return err
 			}
@@ -68,10 +67,10 @@ func newTagsCmd() *cobra.Command {
 		},
 	})
 
-	var createName, createColor, createDesc string
+	var createName, createConfig string
 	createCmd := &cobra.Command{
 		Use:   "create",
-		Short: "Create a new tag",
+		Short: "Create a new labelmaker configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if createName == "" {
 				fmt.Print("Name: ")
@@ -82,13 +81,10 @@ func newTagsCmd() *cobra.Command {
 				return err
 			}
 			payload := map[string]any{
-				"name":        createName,
-				"description": createDesc,
+				"name":   createName,
+				"config": createConfig,
 			}
-			if createColor != "" {
-				payload["color"] = createColor
-			}
-			data, err := c.Post("/v1/tags", payload)
+			data, err := c.Post("/v1/labelmakers", payload)
 			if err != nil {
 				return err
 			}
@@ -96,22 +92,21 @@ func newTagsCmd() *cobra.Command {
 			return nil
 		},
 	}
-	createCmd.Flags().StringVarP(&createName, "name", "n", "", "Tag name")
-	createCmd.Flags().StringVarP(&createColor, "color", "c", "", "Hex color (e.g. #ff0000)")
-	createCmd.Flags().StringVarP(&createDesc, "description", "d", "", "Description")
-	tags.AddCommand(createCmd)
+	createCmd.Flags().StringVarP(&createName, "name", "n", "", "Configuration name")
+	createCmd.Flags().StringVarP(&createConfig, "config", "c", "", "Configuration JSON")
+	lm.AddCommand(createCmd)
 
-	var updateName, updateColor, updateDesc string
+	var updateName, updateConfig string
 	updateCmd := &cobra.Command{
 		Use:   "update <id>",
-		Short: "Update a tag",
+		Short: "Update a labelmaker configuration",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := client.New(true)
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/tags/"+args[0], nil)
+			data, err := c.Get("/v1/labelmakers/"+args[0], nil)
 			if err != nil {
 				return err
 			}
@@ -122,13 +117,10 @@ func newTagsCmd() *cobra.Command {
 			if cmd.Flags().Changed("name") {
 				payload["name"] = updateName
 			}
-			if cmd.Flags().Changed("color") {
-				payload["color"] = updateColor
+			if cmd.Flags().Changed("config") {
+				payload["config"] = updateConfig
 			}
-			if cmd.Flags().Changed("description") {
-				payload["description"] = updateDesc
-			}
-			out, err := c.Put("/v1/tags/"+args[0], payload)
+			out, err := c.Put("/v1/labelmakers/"+args[0], payload)
 			if err != nil {
 				return err
 			}
@@ -136,19 +128,18 @@ func newTagsCmd() *cobra.Command {
 			return nil
 		},
 	}
-	updateCmd.Flags().StringVarP(&updateName, "name", "n", "", "Tag name")
-	updateCmd.Flags().StringVarP(&updateColor, "color", "c", "", "Hex color")
-	updateCmd.Flags().StringVarP(&updateDesc, "description", "d", "", "Description")
-	tags.AddCommand(updateCmd)
+	updateCmd.Flags().StringVarP(&updateName, "name", "n", "", "Configuration name")
+	updateCmd.Flags().StringVarP(&updateConfig, "config", "c", "", "Configuration JSON")
+	lm.AddCommand(updateCmd)
 
 	var deleteYes bool
 	deleteCmd := &cobra.Command{
 		Use:   "delete <id>",
-		Short: "Delete a tag",
+		Short: "Delete a labelmaker configuration",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !deleteYes {
-				if !confirm("Delete tag " + args[0] + "?") {
+				if !confirm("Delete labelmaker configuration " + args[0] + "?") {
 					return nil
 				}
 			}
@@ -156,15 +147,15 @@ func newTagsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := c.Delete("/v1/tags/" + args[0]); err != nil {
+			if _, err := c.Delete("/v1/labelmakers/" + args[0]); err != nil {
 				return err
 			}
-			fmt.Printf(`{"message": "Tag %s deleted"}`+"\n", args[0])
+			fmt.Printf("{\"message\": \"Labelmaker configuration %s deleted\"}\n", args[0])
 			return nil
 		},
 	}
 	deleteCmd.Flags().BoolVarP(&deleteYes, "yes", "y", false, "Skip confirmation")
-	tags.AddCommand(deleteCmd)
+	lm.AddCommand(deleteCmd)
 
-	return tags
+	return lm
 }
