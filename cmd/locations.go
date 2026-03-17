@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
+	"github.com/misonikomipan/homebox-cli/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +28,25 @@ func newLocationsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client.PrintJSON(data)
+
+			if config.GetFormat() == "table" {
+				var locations []struct {
+					ID          string `json:"id"`
+					Name        string `json:"name"`
+					Description string `json:"description"`
+				}
+				if err := json.Unmarshal(data, &locations); err == nil {
+					headers := []string{"ID", "Name", "Description"}
+					rows := make([][]any, len(locations))
+					for i, l := range locations {
+						rows[i] = []any{l.ID, l.Name, l.Description}
+					}
+					client.Print(data, headers, rows)
+					return nil
+				}
+			}
+
+			client.Print(data, nil, nil)
 			return nil
 		},
 	})

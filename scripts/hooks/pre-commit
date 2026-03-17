@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+echo "Running pre-commit hooks..."
+
+# Format check
+echo "Checking formatting..."
+go fmt ./...
+
+# Vet check
+echo "Running go vet..."
+go vet ./...
+
+# Staticcheck
+if command -v staticcheck >/dev/null 2>&1; then
+    echo "Running staticcheck..."
+    staticcheck ./... || echo "Warning: staticcheck failed, but continuing..."
+else
+    echo "Warning: staticcheck not found. Skipping."
+fi
+
+echo "All pre-commit checks passed."

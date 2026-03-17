@@ -12,8 +12,25 @@ const DefaultEndpoint = "https://homebox.mizobuchi.dev"
 type Config struct {
 	Endpoint string `json:"endpoint,omitempty"`
 	Token    string `json:"token,omitempty"`
+	Format   string `json:"format,omitempty"`
 }
 
+func GetFormat() string {
+	if f := os.Getenv("HB_FORMAT"); f != "" {
+		return f
+	}
+	c := Load()
+	if c.Format != "" {
+		return c.Format
+	}
+	return "json"
+}
+
+func SetFormat(format string) error {
+	c := Load()
+	c.Format = format
+	return Save(c)
+}
 func configPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "hb", "config.json")
