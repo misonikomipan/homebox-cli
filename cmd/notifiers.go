@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
+	"github.com/misonikomipan/homebox-cli/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +27,26 @@ func newNotifiersCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client.PrintJSON(data)
+
+			if config.GetFormat() == "table" {
+				var notifiers []struct {
+					ID       string `json:"id"`
+					Name     string `json:"name"`
+					URL      string `json:"url"`
+					IsActive bool   `json:"isActive"`
+				}
+				if err := json.Unmarshal(data, &notifiers); err == nil {
+					headers := []string{"ID", "Name", "URL", "Active"}
+					rows := make([][]any, len(notifiers))
+					for i, n := range notifiers {
+						rows[i] = []any{n.ID, n.Name, n.URL, n.IsActive}
+					}
+					client.Print(data, headers, rows)
+					return nil
+				}
+			}
+
+			client.Print(data, nil, nil)
 			return nil
 		},
 	})

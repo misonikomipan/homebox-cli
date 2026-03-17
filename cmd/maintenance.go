@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
+	"github.com/misonikomipan/homebox-cli/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +33,26 @@ func newMaintenanceCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client.PrintJSON(data)
+
+			if config.GetFormat() == "table" {
+				var entries []struct {
+					ID     string  `json:"id"`
+					Name   string  `json:"name"`
+					Cost   float64 `json:"cost"`
+					Status string  `json:"status"`
+				}
+				if err := json.Unmarshal(data, &entries); err == nil {
+					headers := []string{"ID", "Name", "Cost", "Status"}
+					rows := make([][]any, len(entries))
+					for i, e := range entries {
+						rows[i] = []any{e.ID, e.Name, e.Cost, e.Status}
+					}
+					client.Print(data, headers, rows)
+					return nil
+				}
+			}
+
+			client.Print(data, nil, nil)
 			return nil
 		},
 	}
