@@ -1,6 +1,9 @@
 # homebox-cli
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/misonikomipan/homebox-cli)](https://goreportcard.com/report/github.com/misonikomipan/homebox-cli)
+[日本語 (Japanese)](README.ja.md)
+
+[![Go Report Card]
+(https://goreportcard.com/badge/github.com/misonikomipan/homebox-cli)](https://goreportcard.com/report/github.com/misonikomipan/homebox-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A powerful, user-friendly Command-Line Interface (CLI) for managing your [Homebox](https://github.com/sysadminsmedia/homebox) inventory system.

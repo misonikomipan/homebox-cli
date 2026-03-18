@@ -1,6 +1,9 @@
 # homebox-cli
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/misonikomipan/homebox-cli)](https://goreportcard.com/report/github.com/misonikomipan/homebox-cli)
+[English](README.md)
+
+[![Go Report Card]
+(https://goreportcard.com/badge/github.com/misonikomipan/homebox-cli)](https://goreportcard.com/report/github.com/misonikomipan/homebox-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [Homebox](https://github.com/sysadminsmedia/homebox) 在庫管理システムを操作するための強力で使いやすいコマンドラインインターフェース（CLI）です。
