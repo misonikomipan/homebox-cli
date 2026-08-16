@@ -663,6 +663,9 @@ func newItemsCmd() *cobra.Command {
 				return err
 			}
 			fieldsList, _ := cur["fields"]
+			if fieldsList == nil {
+				fieldsList = []any{}
+			}
 			out, _ := json.MarshalIndent(fieldsList, "", "  ")
 			fmt.Println(string(out))
 			return nil

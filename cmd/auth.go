@@ -278,7 +278,8 @@ func newAuthCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Println("Store this token securely — it is shown only once:")
+			// Warn on stderr so stdout stays pure JSON for scripting.
+			fmt.Fprintln(os.Stderr, "Store this token securely — it is shown only once:")
 			client.PrintJSON(data)
 			return nil
 		},
