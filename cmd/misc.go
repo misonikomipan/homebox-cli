@@ -64,7 +64,8 @@ func newCurrencyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/currency", nil)
+			// v0.26 renamed this endpoint to /v1/currencies
+			data, err := c.Get("/v1/currencies", nil)
 			if err != nil {
 				return err
 			}
@@ -108,28 +109,30 @@ func newGuideCmd() *cobra.Command {
 SETUP
   Set endpoint        hb config --endpoint https://homebox.example.com
   Login               hb login --email you@example.com
+  Use API key         hb auth token hb_xxxx (v0.26 API keys)
   Check config        hb config
   API status          hb status
 
-ITEMS
+ITEMS (v0.26: entities)
   List all            hb items list
   Search              hb items list --query laptop --page-size 20
-  Filter location     hb items list --location <id>
-  Filter tag          hb items list --label <id>
+  Filter location     hb items list --location <parent-id>
+  Filter tag          hb items list --label <tag-id>
   Get                 hb items get <id>
   Create              hb items create --name "MacBook Pro" --location <id>
   Create (full)       hb items create --name "Camera" --quantity 1 --purchase-price 80000
   Update              hb items update <id> --name "New Name"
   Delete              hb items delete <id> --yes
-  Duplicate           hb items duplicate <id>
+  Duplicate           hb items duplicate <id> --copy-fields
   Path                hb items path <id>
   Export CSV          hb items export --output items.csv
   Import CSV          hb items import items.csv
   By asset ID         hb items asset <asset-id>
   Upload attachment   hb items attachments upload <item-id> photo.jpg
   Delete attachment   hb items attachments delete <item-id> <attachment-id>
+  Add field           hb items fields add <item-id> --label "SN" --value "123"
 
-LOCATIONS
+LOCATIONS (v0.26: entities with isLocation=true)
   List                hb locations list
   Tree                hb locations tree
   Tree with items     hb locations tree --with-items
@@ -139,6 +142,10 @@ LOCATIONS
   Update              hb locations update <id> --name "新名前"
   Delete              hb locations delete <id> --yes
 
+ENTITY TYPES
+  List                hb entity-types list
+  Create              hb entity-types create --name "Electronics" --icon "🔌"
+
 TAGS
   List                hb tags list
   Create              hb tags create --name "Electronics" --color "#3b82f6"
@@ -146,15 +153,16 @@ TAGS
   Delete              hb tags delete <id> --yes
 
 GROUPS
+  List                hb groups list
   Info                hb groups info
   Statistics          hb groups stats
   Members             hb groups members
   Invite              hb groups invite --uses 3 --expiry-days 7
 
 MAINTENANCE
-  List                hb maintenance list
-  Create              hb maintenance create --item <id> --name "Oil change" --cost 3000
-  Update              hb maintenance update <id> --completed-date 2026-03-12
+  List                hb maintenance list            (status: both|scheduled|completed)
+  Create              hb maintenance create --item <id> --name "Oil change" --cost 3000 --completed-date 2026-03-12
+  Update              hb maintenance update <id> --cost 4000
   Delete              hb maintenance delete <id> --yes
 
 NOTIFIERS
@@ -163,9 +171,18 @@ NOTIFIERS
   Test                hb notifiers test
   Delete              hb notifiers delete <id> --yes
 
+TEMPLATES
+  List                hb templates list
+  Create item         hb templates create-item <template-id> --name "Widget" --location <loc-id>
+
+LABELMAKER
+  Label PNG           hb labelmaker get <id> -o label.png (--type entity|item|location|asset)
+
 AUTH
+  API keys            hb auth api-keys list|create|delete
   Refresh token       hb auth refresh
   Current user        hb auth me
+  Settings            hb auth settings
   Update profile      hb auth update-me --name "New Name"
   Change password     hb auth change-password
   Logout              hb logout
@@ -176,7 +193,7 @@ ENV VARS
 
 TIPS
   Pretty-print        hb items list | jq '.items[]?.name'
-  Get IDs             hb locations list | jq '.[].id'
+  Get IDs             hb locations list | jq '.items[].id'
   Sub-command help    hb items create --help
 `)
 		},

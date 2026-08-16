@@ -157,19 +157,30 @@ func newTemplatesCmd() *cobra.Command {
 	deleteCmd.Flags().BoolVarP(&deleteYes, "yes", "y", false, "Skip confirmation")
 	t.AddCommand(deleteCmd)
 
-	var createItemLocID string
+	var createItemName, createItemLocID string
+	var createItemQty float64
 	createItemCmd := &cobra.Command{
 		Use:   "create-item <template-id>",
 		Short: "Create an item from a template",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if createItemName == "" {
+				return fmt.Errorf("--name is required")
+			}
+			if createItemLocID == "" {
+				return fmt.Errorf("--location is required")
+			}
 			c, err := client.New(true)
 			if err != nil {
 				return err
 			}
-			payload := map[string]any{}
-			if createItemLocID != "" {
-				payload["locationId"] = createItemLocID
+			// v0.26 requires name + parentId (the location) for this endpoint.
+			payload := map[string]any{
+				"name":     createItemName,
+				"parentId": createItemLocID,
+			}
+			if cmd.Flags().Changed("quantity") {
+				payload["quantity"] = createItemQty
 			}
 			data, err := c.Post("/v1/templates/"+args[0]+"/create-item", payload)
 			if err != nil {
@@ -179,7 +190,9 @@ func newTemplatesCmd() *cobra.Command {
 			return nil
 		},
 	}
-	createItemCmd.Flags().StringVarP(&createItemLocID, "location", "l", "", "Location ID")
+	createItemCmd.Flags().StringVarP(&createItemName, "name", "n", "", "Item name (required)")
+	createItemCmd.Flags().StringVarP(&createItemLocID, "location", "l", "", "Location (parent) ID (required)")
+	createItemCmd.Flags().Float64VarP(&createItemQty, "quantity", "q", 0, "Quantity (defaults to template quantity)")
 	t.AddCommand(createItemCmd)
 
 	return t

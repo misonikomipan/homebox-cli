@@ -6,12 +6,11 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
-	"time"
+	"strings"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
 	"github.com/misonikomipan/homebox-cli/internal/config"
@@ -25,7 +24,8 @@ func newItemsCmd() *cobra.Command {
 	}
 
 	// list
-	var query, locationID, labelID string
+	var query string
+	var locationIDs, labelIDs []string
 	var page, pageSize int
 	var archived bool
 	listCmd := &cobra.Command{
@@ -43,16 +43,17 @@ func newItemsCmd() *cobra.Command {
 			if query != "" {
 				q.Set("q", query)
 			}
-			if locationID != "" {
-				q.Set("locations", locationID)
+			// v0.26: location filters became parentIds, label filters became tags
+			for _, id := range locationIDs {
+				q.Add("parentIds", id)
 			}
-			if labelID != "" {
-				q.Set("labels", labelID)
+			for _, id := range labelIDs {
+				q.Add("tags", id)
 			}
 			if archived {
 				q.Set("includeArchived", "true")
 			}
-			data, err := c.Get("/v1/items", q)
+			data, err := c.Get(entityBasePath, q)
 			if err != nil {
 				return err
 			}
@@ -60,19 +61,24 @@ func newItemsCmd() *cobra.Command {
 			if config.GetFormat() == "table" {
 				var resp struct {
 					Items []struct {
-						ID       string `json:"id"`
-						Name     string `json:"name"`
-						Quantity int    `json:"quantity"`
-						Location struct {
+						ID       string  `json:"id"`
+						AssetID  string  `json:"assetId"`
+						Name     string  `json:"name"`
+						Quantity float64 `json:"quantity"`
+						Parent   *struct {
 							Name string `json:"name"`
-						} `json:"location"`
+						} `json:"parent"`
 					} `json:"items"`
 				}
 				if err := json.Unmarshal(data, &resp); err == nil {
-					headers := []string{"ID", "Name", "Quantity", "Location"}
+					headers := []string{"ID", "Asset", "Name", "Qty", "Location"}
 					rows := make([][]any, len(resp.Items))
 					for i, it := range resp.Items {
-						rows[i] = []any{it.ID, it.Name, it.Quantity, it.Location.Name}
+						loc := ""
+						if it.Parent != nil {
+							loc = it.Parent.Name
+						}
+						rows[i] = []any{it.ID, it.AssetID, it.Name, it.Quantity, loc}
 					}
 					client.Print(data, headers, rows)
 					return nil
@@ -84,8 +90,8 @@ func newItemsCmd() *cobra.Command {
 		},
 	}
 	listCmd.Flags().StringVarP(&query, "query", "q", "", "Search query")
-	listCmd.Flags().StringVarP(&locationID, "location", "l", "", "Filter by location ID")
-	listCmd.Flags().StringVar(&labelID, "label", "", "Filter by label ID")
+	listCmd.Flags().StringArrayVarP(&locationIDs, "location", "l", nil, "Filter by location ID (repeatable)")
+	listCmd.Flags().StringArrayVar(&labelIDs, "label", nil, "Filter by label/tag ID (repeatable)")
 	listCmd.Flags().IntVar(&page, "page", 1, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 10, "Items per page")
 	listCmd.Flags().BoolVar(&archived, "archived", false, "Include archived items")
@@ -101,7 +107,7 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/items/"+args[0], nil)
+			data, err := c.Get(entityBasePath+"/"+args[0], nil)
 			if err != nil {
 				return err
 			}
@@ -113,8 +119,8 @@ func newItemsCmd() *cobra.Command {
 	// create
 	var createName, createDesc, createLocID, createNotes, createAssetID, createPurchaseFrom string
 	var createLabels []string
-	var createQty int
-	var createPrice float64
+	var createQty float64
+	var createPrice, createSoldPrice float64
 	createCmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a new item",
@@ -128,29 +134,54 @@ func newItemsCmd() *cobra.Command {
 				return err
 			}
 			payload := map[string]any{
-				"name":        createName,
-				"description": createDesc,
-				"quantity":    createQty,
-				"notes":       createNotes,
+				"name":     createName,
+				"quantity": createQty,
+			}
+			if createDesc != "" {
+				payload["description"] = createDesc
 			}
 			if createLocID != "" {
-				payload["locationId"] = createLocID
+				payload["parentId"] = createLocID
 			}
 			if len(createLabels) > 0 {
-				payload["labelIds"] = createLabels
+				payload["tagIds"] = createLabels
 			}
-			if createAssetID != "" {
-				payload["assetId"] = createAssetID
-			}
-			if cmd.Flags().Changed("purchase-price") {
-				payload["purchasePrice"] = createPrice
-			}
-			if createPurchaseFrom != "" {
-				payload["purchaseFrom"] = createPurchaseFrom
-			}
-			data, err := c.Post("/v1/items", payload)
+			data, err := c.Post(entityBasePath, payload)
 			if err != nil {
 				return err
+			}
+
+			// v0.26: entity create only accepts name/description/quantity/
+			// parentId/entityTypeId/tagIds. Purchase and other advanced fields
+			// are set with a follow-up update.
+			if cmd.Flags().Changed("purchase-price") || cmd.Flags().Changed("purchase-from") ||
+				cmd.Flags().Changed("notes") || cmd.Flags().Changed("sold-price") ||
+				cmd.Flags().Changed("asset-id") {
+				var created map[string]any
+				if err := json.Unmarshal(data, &created); err != nil {
+					return err
+				}
+				id, _ := created["id"].(string)
+				up := updatePayload(created)
+				if cmd.Flags().Changed("purchase-price") {
+					up["purchasePrice"] = createPrice
+				}
+				if cmd.Flags().Changed("purchase-from") {
+					up["purchaseFrom"] = createPurchaseFrom
+				}
+				if cmd.Flags().Changed("notes") {
+					up["notes"] = createNotes
+				}
+				if cmd.Flags().Changed("sold-price") {
+					up["soldPrice"] = createSoldPrice
+				}
+				if cmd.Flags().Changed("asset-id") {
+					up["assetId"] = createAssetID
+				}
+				data, err = putEntity(c, id, up)
+				if err != nil {
+					return err
+				}
 			}
 			client.PrintJSON(data)
 			return nil
@@ -158,20 +189,23 @@ func newItemsCmd() *cobra.Command {
 	}
 	createCmd.Flags().StringVarP(&createName, "name", "n", "", "Item name")
 	createCmd.Flags().StringVarP(&createDesc, "description", "d", "", "Description")
-	createCmd.Flags().StringVarP(&createLocID, "location", "l", "", "Location ID")
-	createCmd.Flags().StringArrayVar(&createLabels, "label", nil, "Label IDs (repeatable)")
-	createCmd.Flags().IntVarP(&createQty, "quantity", "q", 1, "Quantity")
-	createCmd.Flags().StringVar(&createAssetID, "asset-id", "", "Asset ID")
+	createCmd.Flags().StringVarP(&createLocID, "location", "l", "", "Location (parent) ID")
+	createCmd.Flags().StringArrayVar(&createLabels, "label", nil, "Label/tag IDs (repeatable)")
+	createCmd.Flags().Float64VarP(&createQty, "quantity", "q", 1, "Quantity")
+	createCmd.Flags().StringVar(&createAssetID, "asset-id", "", "Asset ID (applied after creation)")
 	createCmd.Flags().Float64Var(&createPrice, "purchase-price", 0, "Purchase price")
 	createCmd.Flags().StringVar(&createPurchaseFrom, "purchase-from", "", "Purchased from")
+	createCmd.Flags().Float64Var(&createSoldPrice, "sold-price", 0, "Sold price")
 	createCmd.Flags().StringVar(&createNotes, "notes", "", "Notes")
 	items.AddCommand(createCmd)
 
 	// update
 	var updateName, updateDesc, updateLocID, updateNotes, updatePurchaseFrom string
 	var updateLabels []string
-	var updateQty int
-	var updatePrice, updateSoldPrice, updateInsuredFor float64
+	var updateQty float64
+	var updatePrice, updateSoldPrice float64
+	var updateArchived bool
+	var updateSerial, updateModel, updateManufacturer, updatePurchaseDate, updateSoldDate string
 	updateCmd := &cobra.Command{
 		Use:   "update <id>",
 		Short: "Update an item",
@@ -181,15 +215,11 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// fetch current
-			data, err := c.Get("/v1/items/"+args[0], nil)
+			cur, err := fetchEntity(c, args[0])
 			if err != nil {
 				return err
 			}
-			var payload map[string]any
-			if err := unmarshalJSON(data, &payload); err != nil {
-				return err
-			}
+			payload := updatePayload(cur)
 			if cmd.Flags().Changed("name") {
 				payload["name"] = updateName
 			}
@@ -197,10 +227,10 @@ func newItemsCmd() *cobra.Command {
 				payload["description"] = updateDesc
 			}
 			if cmd.Flags().Changed("location") {
-				payload["locationId"] = updateLocID
+				payload["parentId"] = updateLocID
 			}
 			if cmd.Flags().Changed("label") {
-				payload["labelIds"] = updateLabels
+				payload["tagIds"] = updateLabels
 			}
 			if cmd.Flags().Changed("quantity") {
 				payload["quantity"] = updateQty
@@ -217,10 +247,25 @@ func newItemsCmd() *cobra.Command {
 			if cmd.Flags().Changed("sold-price") {
 				payload["soldPrice"] = updateSoldPrice
 			}
-			if cmd.Flags().Changed("insured-for") {
-				payload["insuredFor"] = updateInsuredFor
+			if cmd.Flags().Changed("archived") {
+				payload["archived"] = updateArchived
 			}
-			out, err := c.Put("/v1/items/"+args[0], payload)
+			if cmd.Flags().Changed("serial-number") {
+				payload["serialNumber"] = updateSerial
+			}
+			if cmd.Flags().Changed("model-number") {
+				payload["modelNumber"] = updateModel
+			}
+			if cmd.Flags().Changed("manufacturer") {
+				payload["manufacturer"] = updateManufacturer
+			}
+			if cmd.Flags().Changed("purchase-date") {
+				payload["purchaseDate"] = updatePurchaseDate
+			}
+			if cmd.Flags().Changed("sold-date") {
+				payload["soldDate"] = updateSoldDate
+			}
+			out, err := putEntity(c, args[0], payload)
 			if err != nil {
 				return err
 			}
@@ -230,14 +275,19 @@ func newItemsCmd() *cobra.Command {
 	}
 	updateCmd.Flags().StringVarP(&updateName, "name", "n", "", "Item name")
 	updateCmd.Flags().StringVarP(&updateDesc, "description", "d", "", "Description")
-	updateCmd.Flags().StringVarP(&updateLocID, "location", "l", "", "Location ID")
-	updateCmd.Flags().StringArrayVar(&updateLabels, "label", nil, "Label IDs")
-	updateCmd.Flags().IntVarP(&updateQty, "quantity", "q", 1, "Quantity")
+	updateCmd.Flags().StringVarP(&updateLocID, "location", "l", "", "Location (parent) ID")
+	updateCmd.Flags().StringArrayVar(&updateLabels, "label", nil, "Label/tag IDs (repeatable)")
+	updateCmd.Flags().Float64VarP(&updateQty, "quantity", "q", 1, "Quantity")
 	updateCmd.Flags().StringVar(&updateNotes, "notes", "", "Notes")
 	updateCmd.Flags().Float64Var(&updatePrice, "purchase-price", 0, "Purchase price")
 	updateCmd.Flags().StringVar(&updatePurchaseFrom, "purchase-from", "", "Purchased from")
 	updateCmd.Flags().Float64Var(&updateSoldPrice, "sold-price", 0, "Sold price")
-	updateCmd.Flags().Float64Var(&updateInsuredFor, "insured-for", 0, "Insured for")
+	updateCmd.Flags().BoolVar(&updateArchived, "archived", false, "Archive state")
+	updateCmd.Flags().StringVar(&updateSerial, "serial-number", "", "Serial number")
+	updateCmd.Flags().StringVar(&updateModel, "model-number", "", "Model number")
+	updateCmd.Flags().StringVar(&updateManufacturer, "manufacturer", "", "Manufacturer")
+	updateCmd.Flags().StringVar(&updatePurchaseDate, "purchase-date", "", "Purchase date (YYYY-MM-DD)")
+	updateCmd.Flags().StringVar(&updateSoldDate, "sold-date", "", "Sold date (YYYY-MM-DD)")
 	items.AddCommand(updateCmd)
 
 	// delete
@@ -256,7 +306,7 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := c.Delete("/v1/items/" + args[0]); err != nil {
+			if _, err := c.Delete(entityBasePath + "/" + args[0]); err != nil {
 				return err
 			}
 			fmt.Printf(`{"message": "Item %s deleted"}`+"\n", args[0])
@@ -267,7 +317,9 @@ func newItemsCmd() *cobra.Command {
 	items.AddCommand(deleteCmd)
 
 	// duplicate
-	items.AddCommand(&cobra.Command{
+	var dupMaintenance, dupAttachments, dupFields bool
+	var dupPrefix string
+	duplicateCmd := &cobra.Command{
 		Use:   "duplicate <id>",
 		Short: "Duplicate an item",
 		Args:  cobra.ExactArgs(1),
@@ -276,14 +328,24 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := c.Post("/v1/items/"+args[0]+"/duplicate", nil)
+			data, err := c.Post(entityBasePath+"/"+args[0]+"/duplicate", map[string]any{
+				"copyMaintenance":  dupMaintenance,
+				"copyAttachments":  dupAttachments,
+				"copyCustomFields": dupFields,
+				"copyPrefix":       dupPrefix,
+			})
 			if err != nil {
 				return err
 			}
 			client.PrintJSON(data)
 			return nil
 		},
-	})
+	}
+	duplicateCmd.Flags().BoolVar(&dupMaintenance, "copy-maintenance", false, "Copy maintenance entries")
+	duplicateCmd.Flags().BoolVar(&dupAttachments, "copy-attachments", false, "Copy attachments")
+	duplicateCmd.Flags().BoolVar(&dupFields, "copy-fields", false, "Copy custom fields")
+	duplicateCmd.Flags().StringVar(&dupPrefix, "prefix", "", "Prefix for the copy name")
+	items.AddCommand(duplicateCmd)
 
 	// path
 	items.AddCommand(&cobra.Command{
@@ -295,7 +357,7 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/items/"+args[0]+"/path", nil)
+			data, err := c.Get(entityBasePath+"/"+args[0]+"/path", nil)
 			if err != nil {
 				return err
 			}
@@ -314,7 +376,7 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/items/"+args[0]+"/maintenance", nil)
+			data, err := c.Get(entityBasePath+"/"+args[0]+"/maintenance?status=both", nil)
 			if err != nil {
 				return err
 			}
@@ -329,26 +391,24 @@ func newItemsCmd() *cobra.Command {
 		Use:   "export",
 		Short: "Export all items as CSV",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			token := config.GetToken()
-			if token == "" {
-				return fmt.Errorf("not authenticated — run 'hb login' first")
-			}
-			endpoint := config.GetEndpoint()
-			req, _ := http.NewRequest("GET", endpoint+"/api/v1/items/export", nil)
-			req.Header.Set("Authorization", "Bearer "+token)
-			resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+			c, err := client.New(true)
 			if err != nil {
 				return err
 			}
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(resp.Body)
+			data, status, err := c.Raw("GET", entityBasePath+"/export", nil, nil, "")
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return fmt.Errorf("HTTP %d: %s", status, string(data))
+			}
 			if exportOutput != "" {
-				if err := os.WriteFile(exportOutput, body, 0644); err != nil {
+				if err := os.WriteFile(exportOutput, data, 0644); err != nil {
 					return err
 				}
 				fmt.Printf(`{"message": "Exported to %s"}`+"\n", exportOutput)
 			} else {
-				fmt.Print(string(body))
+				fmt.Print(string(data))
 			}
 			return nil
 		},
@@ -362,9 +422,9 @@ func newItemsCmd() *cobra.Command {
 		Short: "Import items from CSV file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			token := config.GetToken()
-			if token == "" {
-				return fmt.Errorf("not authenticated — run 'hb login' first")
+			c, err := client.New(true)
+			if err != nil {
+				return err
 			}
 			f, err := os.Open(args[0])
 			if err != nil {
@@ -375,20 +435,19 @@ func newItemsCmd() *cobra.Command {
 			var buf bytes.Buffer
 			w := multipart.NewWriter(&buf)
 			part, _ := w.CreateFormFile("csv", filepath.Base(args[0]))
-			io.Copy(part, f)
+			if _, err := io.Copy(part, f); err != nil {
+				return err
+			}
 			w.Close()
 
-			endpoint := config.GetEndpoint()
-			req, _ := http.NewRequest("POST", endpoint+"/api/v1/items/import", &buf)
-			req.Header.Set("Authorization", "Bearer "+token)
-			req.Header.Set("Content-Type", w.FormDataContentType())
-			resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+			data, status, err := c.Raw("POST", entityBasePath+"/import", nil, &buf, w.FormDataContentType())
 			if err != nil {
 				return err
 			}
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(resp.Body)
-			client.PrintJSON(body)
+			if status >= 400 {
+				return fmt.Errorf("HTTP %d: %s", status, string(data))
+			}
+			fmt.Println(`{"message": "Import complete"}`)
 			return nil
 		},
 	})
@@ -419,14 +478,15 @@ func newItemsCmd() *cobra.Command {
 	}
 
 	var attachType, attachName string
+	var attachPrimary bool
 	uploadCmd := &cobra.Command{
 		Use:   "upload <item-id> <file>",
 		Short: "Upload an attachment to an item",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			token := config.GetToken()
-			if token == "" {
-				return fmt.Errorf("not authenticated — run 'hb login' first")
+			c, err := client.New(true)
+			if err != nil {
+				return err
 			}
 			f, err := os.Open(args[1])
 			if err != nil {
@@ -440,27 +500,33 @@ func newItemsCmd() *cobra.Command {
 			}
 			var buf bytes.Buffer
 			w := multipart.NewWriter(&buf)
-			w.WriteField("type", attachType)
+			w.WriteField("name", name) // required by v0.26
+			if attachType != "" {
+				w.WriteField("type", attachType)
+			}
+			if attachPrimary {
+				w.WriteField("primary", "true")
+			}
 			part, _ := w.CreateFormFile("file", name)
-			io.Copy(part, f)
+			if _, err := io.Copy(part, f); err != nil {
+				return err
+			}
 			w.Close()
 
-			endpoint := config.GetEndpoint()
-			req, _ := http.NewRequest("POST", endpoint+"/api/v1/items/"+args[0]+"/attachments", &buf)
-			req.Header.Set("Authorization", "Bearer "+token)
-			req.Header.Set("Content-Type", w.FormDataContentType())
-			resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+			data, status, err := c.Raw("POST", entityBasePath+"/"+args[0]+"/attachments", nil, &buf, w.FormDataContentType())
 			if err != nil {
 				return err
 			}
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(resp.Body)
-			client.PrintJSON(body)
+			if status >= 400 {
+				return fmt.Errorf("HTTP %d: %s", status, string(data))
+			}
+			client.PrintJSON(data)
 			return nil
 		},
 	}
-	uploadCmd.Flags().StringVarP(&attachType, "type", "t", "attachment", "Attachment type")
+	uploadCmd.Flags().StringVarP(&attachType, "type", "t", "", "Attachment type (photo, attachment, ...)")
 	uploadCmd.Flags().StringVar(&attachName, "name", "", "Override file name")
+	uploadCmd.Flags().BoolVar(&attachPrimary, "primary", false, "Set as primary attachment")
 	attachments.AddCommand(uploadCmd)
 
 	var attachDeleteYes bool
@@ -478,7 +544,7 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := c.Delete("/v1/items/" + args[0] + "/attachments/" + args[1]); err != nil {
+			if _, err := c.Delete(entityBasePath + "/" + args[0] + "/attachments/" + args[1]); err != nil {
 				return err
 			}
 			fmt.Printf(`{"message": "Attachment %s deleted"}`+"\n", args[1])
@@ -487,15 +553,123 @@ func newItemsCmd() *cobra.Command {
 	}
 	attachDeleteCmd.Flags().BoolVarP(&attachDeleteYes, "yes", "y", false, "Skip confirmation")
 	attachments.AddCommand(attachDeleteCmd)
+
+	var attUpdType, attUpdTitle string
+	var attUpdPrimary bool
+	attUpdateCmd := &cobra.Command{
+		Use:   "update <item-id> <attachment-id>",
+		Short: "Update an item attachment (type/title/primary)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			// PUT /v1/entities/{id}/attachments/{attachment_id} is a full
+			// update: fetch the current attachment so the type field (a
+			// required enum) round-trips even when it was not changed.
+			cur, err := fetchEntity(c, args[0])
+			if err != nil {
+				return err
+			}
+			var current map[string]any
+			if atts, ok := cur["attachments"].([]any); ok {
+				for _, a := range atts {
+					if am, ok := a.(map[string]any); ok && stringField(am, "id") == args[1] {
+						current = am
+						break
+					}
+				}
+			}
+			if current == nil {
+				return fmt.Errorf("attachment %s not found on item %s", args[1], args[0])
+			}
+			payload := map[string]any{
+				"type":    stringField(current, "type"),
+				"title":   stringField(current, "title"),
+				"primary": current["primary"],
+			}
+			if cmd.Flags().Changed("type") {
+				payload["type"] = attUpdType
+			}
+			if cmd.Flags().Changed("title") {
+				payload["title"] = attUpdTitle
+			}
+			if cmd.Flags().Changed("primary") {
+				payload["primary"] = attUpdPrimary
+			}
+			data, err := c.Put(entityBasePath+"/"+args[0]+"/attachments/"+args[1], payload)
+			if err != nil {
+				return err
+			}
+			client.PrintJSON(data)
+			return nil
+		},
+	}
+	attUpdateCmd.Flags().StringVarP(&attUpdType, "type", "t", "", "Attachment type")
+	attUpdateCmd.Flags().StringVar(&attUpdTitle, "title", "", "Attachment title")
+	attUpdateCmd.Flags().BoolVar(&attUpdPrimary, "primary", false, "Set as primary")
+	attachments.AddCommand(attUpdateCmd)
+
+	var attGetOutput string
+	attGetCmd := &cobra.Command{
+		Use:   "get <item-id> <attachment-id>",
+		Short: "Download an item attachment",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			data, status, err := c.Raw("GET", entityBasePath+"/"+args[0]+"/attachments/"+args[1], nil, nil, "")
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return fmt.Errorf("HTTP %d: %s", status, string(data))
+			}
+			if attGetOutput != "" {
+				if err := os.WriteFile(attGetOutput, data, 0644); err != nil {
+					return err
+				}
+				fmt.Printf(`{"message": "Attachment saved to %s"}`+"\n", attGetOutput)
+			} else {
+				os.Stdout.Write(data)
+			}
+			return nil
+		},
+	}
+	attGetCmd.Flags().StringVarP(&attGetOutput, "output", "o", "", "Output file path")
+	attachments.AddCommand(attGetCmd)
 	items.AddCommand(attachments)
 
-	// fields sub-group
+	// fields sub-group (v0.26: fields are managed through the entity update)
 	fields := &cobra.Command{
 		Use:   "fields",
 		Short: "Manage item custom fields",
 	}
 
-	var fieldLabel, fieldValue string
+	fields.AddCommand(&cobra.Command{
+		Use:   "list <item-id>",
+		Short: "List custom fields of an item",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			cur, err := fetchEntity(c, args[0])
+			if err != nil {
+				return err
+			}
+			fieldsList, _ := cur["fields"]
+			out, _ := json.MarshalIndent(fieldsList, "", "  ")
+			fmt.Println(string(out))
+			return nil
+		},
+	})
+
+	var fieldLabel, fieldValue, fieldType string
 	fieldAddCmd := &cobra.Command{
 		Use:   "add <item-id>",
 		Short: "Add a custom field to an item",
@@ -505,20 +679,25 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			payload := map[string]string{
-				"label": fieldLabel,
-				"value": fieldValue,
-			}
-			data, err := c.Post("/v1/items/"+args[0]+"/fields", payload)
+			cur, err := fetchEntity(c, args[0])
 			if err != nil {
 				return err
 			}
-			client.PrintJSON(data)
+			payload := updatePayload(cur)
+			fieldsList, _ := payload["fields"].([]any)
+			fieldsList = append(fieldsList, fieldData(fieldType, fieldLabel, fieldValue, ""))
+			payload["fields"] = fieldsList
+			out, err := putEntity(c, args[0], payload)
+			if err != nil {
+				return err
+			}
+			client.PrintJSON(out)
 			return nil
 		},
 	}
 	fieldAddCmd.Flags().StringVarP(&fieldLabel, "label", "l", "", "Field label")
 	fieldAddCmd.Flags().StringVarP(&fieldValue, "value", "v", "", "Field value")
+	fieldAddCmd.Flags().StringVarP(&fieldType, "type", "t", "text", "Field type (text, number, boolean)")
 	fieldAddCmd.MarkFlagRequired("label")
 	fieldAddCmd.MarkFlagRequired("value")
 	fields.AddCommand(fieldAddCmd)
@@ -532,23 +711,44 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			payload := make(map[string]string)
-			if cmd.Flags().Changed("label") {
-				payload["label"] = fieldLabel
-			}
-			if cmd.Flags().Changed("value") {
-				payload["value"] = fieldValue
-			}
-			data, err := c.Put("/v1/items/"+args[0]+"/fields/"+args[1], payload)
+			cur, err := fetchEntity(c, args[0])
 			if err != nil {
 				return err
 			}
-			client.PrintJSON(data)
+			payload := updatePayload(cur)
+			fieldsList, _ := payload["fields"].([]any)
+			found := false
+			for i, f := range fieldsList {
+				if fm, ok := f.(map[string]any); ok && stringField(fm, "id") == args[1] {
+					if cmd.Flags().Changed("label") {
+						fm["name"] = fieldLabel
+					}
+					if cmd.Flags().Changed("value") {
+						setFieldValue(fm, fieldType, fieldValue)
+					}
+					if cmd.Flags().Changed("type") {
+						fm["type"] = fieldType
+					}
+					fieldsList[i] = fm
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("field %s not found on item %s", args[1], args[0])
+			}
+			payload["fields"] = fieldsList
+			out, err := putEntity(c, args[0], payload)
+			if err != nil {
+				return err
+			}
+			client.PrintJSON(out)
 			return nil
 		},
 	}
 	fieldUpdateCmd.Flags().StringVarP(&fieldLabel, "label", "l", "", "Field label")
 	fieldUpdateCmd.Flags().StringVarP(&fieldValue, "value", "v", "", "Field value")
+	fieldUpdateCmd.Flags().StringVarP(&fieldType, "type", "t", "text", "Field type (text, number, boolean)")
 	fields.AddCommand(fieldUpdateCmd)
 
 	var fieldDeleteYes bool
@@ -566,10 +766,26 @@ func newItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := c.Delete("/v1/items/" + args[0] + "/fields/" + args[1]); err != nil {
+			cur, err := fetchEntity(c, args[0])
+			if err != nil {
+				return err
+			}
+			payload := updatePayload(cur)
+			fieldsList, _ := payload["fields"].([]any)
+			outList := fieldsList[:0]
+			for _, f := range fieldsList {
+				if fm, ok := f.(map[string]any); ok && stringField(fm, "id") == args[1] {
+					continue
+				}
+				outList = append(outList, f)
+			}
+			payload["fields"] = outList
+			out, err := putEntity(c, args[0], payload)
+			if err != nil {
 				return err
 			}
 			fmt.Printf(`{"message": "Field %s deleted"}`+"\n", args[1])
+			_ = out
 			return nil
 		},
 	}
@@ -579,4 +795,40 @@ func newItemsCmd() *cobra.Command {
 	items.AddCommand(fields)
 
 	return items
+}
+
+// fieldData builds an EntityFieldData map for the given label/value/type.
+func fieldData(fieldType, label, value, id string) map[string]any {
+	f := map[string]any{
+		"type":         fieldType,
+		"name":         label,
+		"textValue":    "",
+		"numberValue":  0,
+		"booleanValue": false,
+	}
+	if id != "" {
+		f["id"] = id
+	}
+	setFieldValue(f, fieldType, value)
+	return f
+}
+
+// setFieldValue stores value in the correct field of an EntityFieldData map
+// depending on the field type.
+func setFieldValue(f map[string]any, fieldType, value string) {
+	switch strings.ToLower(fieldType) {
+	case "number":
+		if n, err := strconv.Atoi(value); err == nil {
+			f["numberValue"] = n
+		} else if fl, err := strconv.ParseFloat(value, 64); err == nil {
+			f["numberValue"] = int(fl)
+		}
+	case "boolean":
+		f["booleanValue"] = strings.EqualFold(value, "true") || value == "1"
+	default:
+		f["type"] = "text"
+		f["textValue"] = value
+		f["numberValue"] = 0
+		f["booleanValue"] = false
+	}
 }

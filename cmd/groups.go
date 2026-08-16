@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
@@ -13,6 +12,23 @@ func newGroupsCmd() *cobra.Command {
 		Use:   "groups",
 		Short: "Manage groups and members",
 	}
+
+	groups.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List all groups the user belongs to",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			data, err := c.Get("/v1/groups/all", nil)
+			if err != nil {
+				return err
+			}
+			client.PrintJSON(data)
+			return nil
+		},
+	})
 
 	groups.AddCommand(&cobra.Command{
 		Use:   "info",
@@ -118,6 +134,5 @@ func newGroupsCmd() *cobra.Command {
 	inviteCmd.Flags().IntVar(&inviteExpiry, "expiry-days", 7, "Days until expiry")
 	groups.AddCommand(inviteCmd)
 
-	_ = fmt.Sprintf // suppress unused import
 	return groups
 }

@@ -23,38 +23,31 @@ type Client struct {
 func New(authenticated bool) (*Client, error) {
 	c := &Client{
 		base:       config.GetEndpoint() + "/api",
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 	if authenticated {
 		token := config.GetToken()
 		if token == "" {
-			return nil, fmt.Errorf("not authenticated — run 'hb login' first")
+			return nil, fmt.Errorf("not authenticated — run 'hb login' first or set HB_TOKEN")
 		}
 		c.token = token
 	}
 	return c, nil
 }
 
-func (c *Client) do(method, path string, query url.Values, body any) ([]byte, int, error) {
+func (c *Client) do(method, path string, query url.Values, body io.Reader, contentType string) ([]byte, int, error) {
 	u := c.base + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
 
-	var bodyReader io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return nil, 0, err
-		}
-		bodyReader = bytes.NewReader(b)
-	}
-
-	req, err := http.NewRequest(method, u, bodyReader)
+	req, err := http.NewRequest(method, u, body)
 	if err != nil {
 		return nil, 0, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
@@ -84,12 +77,24 @@ func (c *Client) Put(path string, body any) ([]byte, error) {
 	return c.request("PUT", path, nil, body)
 }
 
+func (c *Client) Patch(path string, body any) ([]byte, error) {
+	return c.request("PATCH", path, nil, body)
+}
+
 func (c *Client) Delete(path string) ([]byte, error) {
 	return c.request("DELETE", path, nil, nil)
 }
 
 func (c *Client) request(method, path string, query url.Values, body any) ([]byte, error) {
-	data, status, err := c.do(method, path, query, body)
+	var reader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reader = bytes.NewReader(b)
+	}
+	data, status, err := c.do(method, path, query, reader, "application/json")
 	if err != nil {
 		return nil, err
 	}
@@ -100,6 +105,17 @@ func (c *Client) request(method, path string, query url.Values, body any) ([]byt
 		return nil, fmt.Errorf("HTTP %d: %s", status, string(data))
 	}
 	return data, nil
+}
+
+// Raw performs a request with an arbitrary (e.g. multipart) body and returns
+// the raw response body bytes. It is used for CSV import/export, attachments
+// and labelmaker PNG downloads where JSON marshaling does not apply.
+func (c *Client) Raw(method, path string, query url.Values, body io.Reader, contentType string) ([]byte, int, error) {
+	data, status, err := c.do(method, path, query, body, contentType)
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, status, nil
 }
 
 // Print outputs data in the specified format (json or table).

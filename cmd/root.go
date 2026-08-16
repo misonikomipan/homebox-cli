@@ -36,9 +36,11 @@ func init() {
 		newLocationsCmd(),
 		newTagsCmd(),
 		newGroupsCmd(),
+		newEntityTypesCmd(),
 		newMaintenanceCmd(),
 		newNotifiersCmd(),
 		newTemplatesCmd(),
+		newLabelmakerCmd(),
 		newAuthCmd(),
 	)
 }

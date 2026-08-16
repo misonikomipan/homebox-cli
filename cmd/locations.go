@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
 	"github.com/misonikomipan/homebox-cli/internal/config"
@@ -13,10 +14,12 @@ import (
 func newLocationsCmd() *cobra.Command {
 	loc := &cobra.Command{
 		Use:   "locations",
-		Short: "Manage locations",
+		Short: "Manage locations (entity type: location)",
 	}
 
-	loc.AddCommand(&cobra.Command{
+	// list
+	var page, pageSize int
+	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all locations",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -24,22 +27,31 @@ func newLocationsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/locations", nil)
+			// v0.26: locations are entities with isLocation=true
+			q := url.Values{
+				"isLocation": {"true"},
+				"page":       {strconv.Itoa(page)},
+				"pageSize":   {strconv.Itoa(pageSize)},
+			}
+			data, err := c.Get(entityBasePath, q)
 			if err != nil {
 				return err
 			}
 
 			if config.GetFormat() == "table" {
-				var locations []struct {
-					ID          string `json:"id"`
-					Name        string `json:"name"`
-					Description string `json:"description"`
+				var resp struct {
+					Items []struct {
+						ID          string  `json:"id"`
+						Name        string  `json:"name"`
+						Description string  `json:"description"`
+						ItemCount   float64 `json:"itemCount"`
+					} `json:"items"`
 				}
-				if err := json.Unmarshal(data, &locations); err == nil {
-					headers := []string{"ID", "Name", "Description"}
-					rows := make([][]any, len(locations))
-					for i, l := range locations {
-						rows[i] = []any{l.ID, l.Name, l.Description}
+				if err := json.Unmarshal(data, &resp); err == nil {
+					headers := []string{"ID", "Name", "Description", "Items"}
+					rows := make([][]any, len(resp.Items))
+					for i, l := range resp.Items {
+						rows[i] = []any{l.ID, l.Name, l.Description, l.ItemCount}
 					}
 					client.Print(data, headers, rows)
 					return nil
@@ -49,7 +61,10 @@ func newLocationsCmd() *cobra.Command {
 			client.Print(data, nil, nil)
 			return nil
 		},
-	})
+	}
+	listCmd.Flags().IntVar(&page, "page", 1, "Page number")
+	listCmd.Flags().IntVar(&pageSize, "page-size", 10, "Items per page")
+	loc.AddCommand(listCmd)
 
 	var withItems bool
 	treeCmd := &cobra.Command{
@@ -64,7 +79,7 @@ func newLocationsCmd() *cobra.Command {
 			if withItems {
 				q.Set("withItems", "true")
 			}
-			data, err := c.Get("/v1/locations/tree", q)
+			data, err := c.Get(entityBasePath+"/tree", q)
 			if err != nil {
 				return err
 			}
@@ -84,7 +99,7 @@ func newLocationsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/locations/"+args[0], nil)
+			data, err := c.Get(entityBasePath+"/"+args[0], nil)
 			if err != nil {
 				return err
 			}
@@ -106,14 +121,19 @@ func newLocationsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			etID, err := locationEntityTypeID(c)
+			if err != nil {
+				return err
+			}
 			payload := map[string]any{
-				"name":        createName,
-				"description": createDesc,
+				"name":         createName,
+				"description":  createDesc,
+				"entityTypeId": etID,
 			}
 			if createParent != "" {
 				payload["parentId"] = createParent
 			}
-			data, err := c.Post("/v1/locations", payload)
+			data, err := c.Post(entityBasePath, payload)
 			if err != nil {
 				return err
 			}
@@ -136,14 +156,11 @@ func newLocationsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := c.Get("/v1/locations/"+args[0], nil)
+			cur, err := fetchEntity(c, args[0])
 			if err != nil {
 				return err
 			}
-			var payload map[string]any
-			if err := unmarshalJSON(data, &payload); err != nil {
-				return err
-			}
+			payload := updatePayload(cur)
 			if cmd.Flags().Changed("name") {
 				payload["name"] = updateName
 			}
@@ -153,7 +170,7 @@ func newLocationsCmd() *cobra.Command {
 			if cmd.Flags().Changed("parent") {
 				payload["parentId"] = updateParent
 			}
-			out, err := c.Put("/v1/locations/"+args[0], payload)
+			out, err := putEntity(c, args[0], payload)
 			if err != nil {
 				return err
 			}
@@ -181,7 +198,7 @@ func newLocationsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := c.Delete("/v1/locations/" + args[0]); err != nil {
+			if _, err := c.Delete(entityBasePath + "/" + args[0]); err != nil {
 				return err
 			}
 			fmt.Printf(`{"message": "Location %s deleted"}`+"\n", args[0])
