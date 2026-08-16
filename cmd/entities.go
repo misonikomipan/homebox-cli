@@ -58,12 +58,15 @@ func updatePayload(m map[string]any) map[string]any {
 		out[k] = v
 	}
 
+	// EntityUpdate's parentId is nullable and omitting it clears the
+	// parent. Sending an explicit empty string makes v0.26 return a 500,
+	// so only carry parentId over when the entity actually has a parent.
 	if p, ok := out["parent"].(map[string]any); ok {
 		if id, ok := p["id"].(string); ok {
 			out["parentId"] = id
 		}
 	} else {
-		out["parentId"] = ""
+		delete(out, "parentId")
 	}
 	delete(out, "parent")
 
@@ -72,7 +75,7 @@ func updatePayload(m map[string]any) map[string]any {
 			out["entityTypeId"] = id
 		}
 	} else {
-		out["entityTypeId"] = ""
+		delete(out, "entityTypeId")
 	}
 	delete(out, "entityType")
 
