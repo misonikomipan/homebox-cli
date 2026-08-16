@@ -4,11 +4,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
 	"github.com/misonikomipan/homebox-cli/internal/config"
 	"github.com/spf13/cobra"
 )
+
+// maintenancePayload builds the JSON body accepted by the v0.26 maintenance
+// endpoints. Cost must be serialized as a string and at least one of
+// completedDate / scheduledDate is required by the server.
+func maintenancePayload(name, description, completed, scheduled string, cost float64) map[string]any {
+	return map[string]any{
+		"name":          name,
+		"description":   description,
+		"cost":          strconv.FormatFloat(cost, 'f', -1, 64),
+		"completedDate": completed,
+		"scheduledDate": scheduled,
+	}
+}
 
 func newMaintenanceCmd() *cobra.Command {
 	m := &cobra.Command{
@@ -26,26 +40,30 @@ func newMaintenanceCmd() *cobra.Command {
 				return err
 			}
 			q := url.Values{}
-			if listStatus != "" {
-				q.Set("status", listStatus)
+			// v0.26 rejects an empty status filter; default to "both".
+			status := listStatus
+			if status == "" {
+				status = "both"
 			}
+			q.Set("status", status)
 			data, err := c.Get("/v1/maintenance", q)
 			if err != nil {
 				return err
 			}
 
 			if config.GetFormat() == "table" {
-				var entries []struct {
-					ID     string  `json:"id"`
-					Name   string  `json:"name"`
-					Cost   float64 `json:"cost"`
-					Status string  `json:"status"`
-				}
-				if err := json.Unmarshal(data, &entries); err == nil {
-					headers := []string{"ID", "Name", "Cost", "Status"}
-					rows := make([][]any, len(entries))
-					for i, e := range entries {
-						rows[i] = []any{e.ID, e.Name, e.Cost, e.Status}
+				var raw []map[string]any
+				if err := json.Unmarshal(data, &raw); err == nil {
+					headers := []string{"ID", "Name", "Cost", "Item"}
+					rows := make([][]any, 0, len(raw))
+					for _, e := range raw {
+						cost, _ := e["cost"].(string)
+						rows = append(rows, []any{
+							stringField(e, "id"),
+							stringField(e, "name"),
+							cost,
+							stringField(e, "itemName"),
+						})
 					}
 					client.Print(data, headers, rows)
 					return nil
@@ -56,7 +74,7 @@ func newMaintenanceCmd() *cobra.Command {
 			return nil
 		},
 	}
-	listCmd.Flags().StringVarP(&listStatus, "status", "s", "", "Filter by status")
+	listCmd.Flags().StringVarP(&listStatus, "status", "s", "both", "Filter by status (scheduled, completed, both)")
 	m.AddCommand(listCmd)
 
 	var createItemID, createName, createNotes, createScheduled, createCompleted string
@@ -65,26 +83,22 @@ func newMaintenanceCmd() *cobra.Command {
 		Use:   "create",
 		Short: "Create a maintenance entry for an item",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if createItemID == "" {
+				return fmt.Errorf("--item is required")
+			}
 			if createName == "" {
 				fmt.Print("Name: ")
 				fmt.Scanln(&createName)
+			}
+			if createCompleted == "" && createScheduled == "" {
+				return fmt.Errorf("at least one of --completed-date or --scheduled-date is required")
 			}
 			c, err := client.New(true)
 			if err != nil {
 				return err
 			}
-			payload := map[string]any{
-				"name":  createName,
-				"notes": createNotes,
-				"cost":  createCost,
-			}
-			if createScheduled != "" {
-				payload["scheduledDate"] = createScheduled
-			}
-			if createCompleted != "" {
-				payload["completedDate"] = createCompleted
-			}
-			data, err := c.Post("/v1/items/"+createItemID+"/maintenance", payload)
+			payload := maintenancePayload(createName, createNotes, createCompleted, createScheduled, createCost)
+			data, err := c.Post(entityBasePath+"/"+createItemID+"/maintenance", payload)
 			if err != nil {
 				return err
 			}
@@ -96,9 +110,8 @@ func newMaintenanceCmd() *cobra.Command {
 	createCmd.Flags().StringVarP(&createName, "name", "n", "", "Entry name")
 	createCmd.Flags().StringVar(&createNotes, "notes", "", "Notes")
 	createCmd.Flags().Float64Var(&createCost, "cost", 0, "Cost")
-	createCmd.Flags().StringVar(&createScheduled, "scheduled-date", "", "Scheduled date (ISO 8601)")
-	createCmd.Flags().StringVar(&createCompleted, "completed-date", "", "Completed date (ISO 8601)")
-	_ = createCmd.MarkFlagRequired("item")
+	createCmd.Flags().StringVar(&createScheduled, "scheduled-date", "", "Scheduled date (YYYY-MM-DD)")
+	createCmd.Flags().StringVar(&createCompleted, "completed-date", "", "Completed date (YYYY-MM-DD)")
 	m.AddCommand(createCmd)
 
 	var updateName, updateNotes, updateScheduled, updateCompleted string
@@ -112,35 +125,68 @@ func newMaintenanceCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			payload := map[string]any{}
-			if cmd.Flags().Changed("name") {
-				payload["name"] = updateName
-			}
-			if cmd.Flags().Changed("notes") {
-				payload["notes"] = updateNotes
-			}
-			if cmd.Flags().Changed("cost") {
-				payload["cost"] = updateCost
-			}
-			if cmd.Flags().Changed("scheduled-date") {
-				payload["scheduledDate"] = updateScheduled
-			}
-			if cmd.Flags().Changed("completed-date") {
-				payload["completedDate"] = updateCompleted
-			}
-			data, err := c.Put("/v1/maintenance/"+args[0], payload)
+			// There is no GET /maintenance/{id}; fetch the full list and pick
+			// the entry so the mandatory date fields round-trip.
+			data, err := c.Get("/v1/maintenance", url.Values{"status": {"both"}})
 			if err != nil {
 				return err
 			}
-			client.PrintJSON(data)
+			var entries []map[string]any
+			if err := json.Unmarshal(data, &entries); err != nil {
+				return err
+			}
+			var cur map[string]any
+			for _, e := range entries {
+				if stringField(e, "id") == args[0] {
+					cur = e
+					break
+				}
+			}
+			if cur == nil {
+				return fmt.Errorf("maintenance entry %s not found", args[0])
+			}
+
+			name := stringField(cur, "name")
+			notes := stringField(cur, "description")
+			completed := stringField(cur, "completedDate")
+			scheduled := stringField(cur, "scheduledDate")
+			cost := 0.0
+			if cs, ok := cur["cost"].(string); ok {
+				cost, _ = strconv.ParseFloat(cs, 64)
+			}
+
+			if cmd.Flags().Changed("name") {
+				name = updateName
+			}
+			if cmd.Flags().Changed("notes") {
+				notes = updateNotes
+			}
+			if cmd.Flags().Changed("completed-date") {
+				completed = updateCompleted
+			}
+			if cmd.Flags().Changed("scheduled-date") {
+				scheduled = updateScheduled
+			}
+			if cmd.Flags().Changed("cost") {
+				cost = updateCost
+			}
+			if completed == "" && scheduled == "" {
+				return fmt.Errorf("at least one of --completed-date or --scheduled-date is required")
+			}
+			payload := maintenancePayload(name, notes, completed, scheduled, cost)
+			out, err := c.Put("/v1/maintenance/"+args[0], payload)
+			if err != nil {
+				return err
+			}
+			client.PrintJSON(out)
 			return nil
 		},
 	}
 	updateCmd.Flags().StringVarP(&updateName, "name", "n", "", "Entry name")
 	updateCmd.Flags().StringVar(&updateNotes, "notes", "", "Notes")
 	updateCmd.Flags().Float64Var(&updateCost, "cost", 0, "Cost")
-	updateCmd.Flags().StringVar(&updateScheduled, "scheduled-date", "", "Scheduled date (ISO 8601)")
-	updateCmd.Flags().StringVar(&updateCompleted, "completed-date", "", "Completed date (ISO 8601)")
+	updateCmd.Flags().StringVar(&updateScheduled, "scheduled-date", "", "Scheduled date (YYYY-MM-DD)")
+	updateCmd.Flags().StringVar(&updateCompleted, "completed-date", "", "Completed date (YYYY-MM-DD)")
 	m.AddCommand(updateCmd)
 
 	var deleteYes bool

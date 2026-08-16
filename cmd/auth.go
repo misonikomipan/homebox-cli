@@ -3,13 +3,13 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
 	"github.com/misonikomipan/homebox-cli/internal/config"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
-	"os"
 )
 
 // newLoginCmd is also exposed as top-level `hb login`.
@@ -82,6 +82,8 @@ func newLogoutCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := client.New(true)
 			if err == nil {
+				// API keys cannot be logged out server-side; the error is
+				// intentionally ignored here and the local token is cleared.
 				_, _ = c.Post("/v1/users/logout", nil)
 			}
 			if err := config.ClearToken(); err != nil {
@@ -101,6 +103,21 @@ func newAuthCmd() *cobra.Command {
 
 	auth.AddCommand(newLoginCmd())
 	auth.AddCommand(newLogoutCmd())
+
+	auth.AddCommand(&cobra.Command{
+		Use:   "token <value>",
+		Short: "Store an API key or session token directly",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			token := strings.TrimPrefix(strings.TrimSpace(args[0]), "Bearer ")
+			if err := config.SetToken(token); err != nil {
+				return err
+			}
+			out, _ := json.MarshalIndent(map[string]string{"message": "Token stored"}, "", "  ")
+			fmt.Println(string(out))
+			return nil
+		},
+	})
 
 	auth.AddCommand(&cobra.Command{
 		Use:   "refresh",
@@ -171,6 +188,23 @@ func newAuthCmd() *cobra.Command {
 	auth.AddCommand(updateMe)
 
 	auth.AddCommand(&cobra.Command{
+		Use:   "settings",
+		Short: "Get current user settings",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			data, err := c.Get("/v1/users/self/settings", nil)
+			if err != nil {
+				return err
+			}
+			client.PrintJSON(data)
+			return nil
+		},
+	})
+
+	auth.AddCommand(&cobra.Command{
 		Use:   "change-password",
 		Short: "Change user password",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -187,7 +221,8 @@ func newAuthCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := c.Put("/v1/users/change-password", map[string]string{
+			// v0.26 moved this endpoint under /users/self/
+			data, err := c.Put("/v1/users/self/change-password", map[string]string{
 				"current": string(cur),
 				"new":     string(nw),
 			})
@@ -198,6 +233,87 @@ func newAuthCmd() *cobra.Command {
 			return nil
 		},
 	})
+
+	// API keys (v0.26 feature)
+	apiKeys := &cobra.Command{
+		Use:   "api-keys",
+		Short: "Manage API keys",
+	}
+
+	apiKeys.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List API keys",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			data, err := c.Get("/v1/users/self/api-keys", nil)
+			if err != nil {
+				return err
+			}
+			client.PrintJSON(data)
+			return nil
+		},
+	})
+
+	var keyName, keyExpires string
+	keyCreateCmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a new API key",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if keyName == "" {
+				fmt.Print("Name: ")
+				fmt.Scanln(&keyName)
+			}
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			payload := map[string]any{"name": keyName}
+			if keyExpires != "" {
+				payload["expiresAt"] = keyExpires
+			}
+			data, err := c.Post("/v1/users/self/api-keys", payload)
+			if err != nil {
+				return err
+			}
+			// Warn on stderr so stdout stays pure JSON for scripting.
+			fmt.Fprintln(os.Stderr, "Store this token securely — it is shown only once:")
+			client.PrintJSON(data)
+			return nil
+		},
+	}
+	keyCreateCmd.Flags().StringVarP(&keyName, "name", "n", "", "API key name")
+	keyCreateCmd.Flags().StringVar(&keyExpires, "expires-at", "", "Expiration timestamp (RFC3339)")
+	apiKeys.AddCommand(keyCreateCmd)
+
+	var keyDeleteYes bool
+	keyDeleteCmd := &cobra.Command{
+		Use:   "delete <id>",
+		Short: "Delete an API key",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !keyDeleteYes {
+				if !confirm("Delete API key " + args[0] + "?") {
+					return nil
+				}
+			}
+			c, err := client.New(true)
+			if err != nil {
+				return err
+			}
+			if _, err := c.Delete("/v1/users/self/api-keys/" + args[0]); err != nil {
+				return err
+			}
+			fmt.Printf(`{"message": "API key %s deleted"}`+"\n", args[0])
+			return nil
+		},
+	}
+	keyDeleteCmd.Flags().BoolVarP(&keyDeleteYes, "yes", "y", false, "Skip confirmation")
+	apiKeys.AddCommand(keyDeleteCmd)
+
+	auth.AddCommand(apiKeys)
 
 	return auth
 }

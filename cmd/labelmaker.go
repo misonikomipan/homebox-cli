@@ -1,161 +1,64 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
+	"net/url"
+	"os"
+	"strings"
 
 	"github.com/misonikomipan/homebox-cli/internal/client"
-	"github.com/misonikomipan/homebox-cli/internal/config"
 	"github.com/spf13/cobra"
 )
 
 func newLabelmakerCmd() *cobra.Command {
 	lm := &cobra.Command{
 		Use:   "labelmaker",
-		Short: "Manage labelmaker configurations",
+		Short: "Generate labels (v0.26 labelmaker endpoints)",
 	}
 
-	lm.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List all labelmaker configurations",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := client.New(true)
-			if err != nil {
-				return err
-			}
-			data, err := c.Get("/v1/labelmakers", nil)
-			if err != nil {
-				return err
-			}
-
-			if config.GetFormat() == "table" {
-				var configs []struct {
-					ID   string `json:"id"`
-					Name string `json:"name"`
-				}
-				if err := json.Unmarshal(data, &configs); err == nil {
-					headers := []string{"ID", "Name"}
-					rows := make([][]any, len(configs))
-					for i, cfg := range configs {
-						rows[i] = []any{cfg.ID, cfg.Name}
-					}
-					client.Print(data, headers, rows)
-					return nil
-				}
-			}
-
-			client.Print(data, nil, nil)
-			return nil
-		},
-	})
-
-	lm.AddCommand(&cobra.Command{
+	var labelType, output string
+	var print bool
+	getCmd := &cobra.Command{
 		Use:   "get <id>",
-		Short: "Get labelmaker configuration details",
+		Short: "Generate a label PNG for an entity/item/location/asset",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := client.New(true)
-			if err != nil {
-				return err
-			}
-			data, err := c.Get("/v1/labelmakers/"+args[0], nil)
-			if err != nil {
-				return err
-			}
-			client.PrintJSON(data)
-			return nil
-		},
-	})
-
-	var createName, createConfig string
-	createCmd := &cobra.Command{
-		Use:   "create",
-		Short: "Create a new labelmaker configuration",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if createName == "" {
-				fmt.Print("Name: ")
-				fmt.Scanln(&createName)
+			t := strings.ToLower(labelType)
+			switch t {
+			case "entity", "item", "location", "asset":
+			default:
+				return fmt.Errorf("--type must be one of: entity, item, location, asset")
 			}
 			c, err := client.New(true)
 			if err != nil {
 				return err
 			}
-			payload := map[string]any{
-				"name":   createName,
-				"config": createConfig,
+			q := url.Values{}
+			if print {
+				q.Set("print", "true")
 			}
-			data, err := c.Post("/v1/labelmakers", payload)
+			data, status, err := c.Raw("GET", "/v1/labelmaker/"+t+"/"+args[0], q, nil, "")
 			if err != nil {
 				return err
 			}
-			client.PrintJSON(data)
-			return nil
-		},
-	}
-	createCmd.Flags().StringVarP(&createName, "name", "n", "", "Configuration name")
-	createCmd.Flags().StringVarP(&createConfig, "config", "c", "", "Configuration JSON")
-	lm.AddCommand(createCmd)
-
-	var updateName, updateConfig string
-	updateCmd := &cobra.Command{
-		Use:   "update <id>",
-		Short: "Update a labelmaker configuration",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := client.New(true)
-			if err != nil {
-				return err
+			if status >= 400 {
+				return fmt.Errorf("HTTP %d: %s", status, string(data))
 			}
-			data, err := c.Get("/v1/labelmakers/"+args[0], nil)
-			if err != nil {
-				return err
-			}
-			var payload map[string]any
-			if err := unmarshalJSON(data, &payload); err != nil {
-				return err
-			}
-			if cmd.Flags().Changed("name") {
-				payload["name"] = updateName
-			}
-			if cmd.Flags().Changed("config") {
-				payload["config"] = updateConfig
-			}
-			out, err := c.Put("/v1/labelmakers/"+args[0], payload)
-			if err != nil {
-				return err
-			}
-			client.PrintJSON(out)
-			return nil
-		},
-	}
-	updateCmd.Flags().StringVarP(&updateName, "name", "n", "", "Configuration name")
-	updateCmd.Flags().StringVarP(&updateConfig, "config", "c", "", "Configuration JSON")
-	lm.AddCommand(updateCmd)
-
-	var deleteYes bool
-	deleteCmd := &cobra.Command{
-		Use:   "delete <id>",
-		Short: "Delete a labelmaker configuration",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if !deleteYes {
-				if !confirm("Delete labelmaker configuration " + args[0] + "?") {
-					return nil
+			if output != "" {
+				if err := os.WriteFile(output, data, 0644); err != nil {
+					return err
 				}
+				fmt.Printf(`{"message": "Label saved to %s"}`+"\n", output)
+			} else {
+				os.Stdout.Write(data)
 			}
-			c, err := client.New(true)
-			if err != nil {
-				return err
-			}
-			if _, err := c.Delete("/v1/labelmakers/" + args[0]); err != nil {
-				return err
-			}
-			fmt.Printf("{\"message\": \"Labelmaker configuration %s deleted\"}\n", args[0])
 			return nil
 		},
 	}
-	deleteCmd.Flags().BoolVarP(&deleteYes, "yes", "y", false, "Skip confirmation")
-	lm.AddCommand(deleteCmd)
+	getCmd.Flags().StringVarP(&labelType, "type", "t", "entity", "Label type (entity, item, location, asset)")
+	getCmd.Flags().StringVarP(&output, "output", "o", "", "Output PNG file path")
+	getCmd.Flags().BoolVar(&print, "print", false, "Send the label to the configured printer")
+	lm.AddCommand(getCmd)
 
 	return lm
 }
